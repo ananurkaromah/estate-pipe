@@ -50,6 +50,8 @@ services:
     pull_policy: always
     user: "root"
     command: server standalone
+    env_file:
+      - .env
     volumes:
       - kestra_data:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock

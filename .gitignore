@@ -1,6 +1,7 @@
 # Python Virtual Environment
 .venv/
 __pycache__/
+.env
 
 # dlt Secrets and Configs
 .dlt/secrets.toml

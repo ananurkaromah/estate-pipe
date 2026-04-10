@@ -1,0 +1,11 @@
+# Python Virtual Environment
+.venv/
+__pycache__/
+
+# dlt Secrets and Configs
+.dlt/secrets.toml
+ingestion/.dlt/secrets.toml
+
+# MacOS/Windows hidden files (just in case)
+.DS_Store
+Thumbs.db

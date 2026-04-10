@@ -36,7 +36,7 @@ if __name__ == "__main__":
         dataset_name="raw_estate_schema" 
     )
     
-    print("Starting the dlt pipeline...")
+    print("⏳ Starting the dlt pipeline...")
     load_info = pipeline.run(fetch_properties())
     
     print("Pipeline finished successfully!")

@@ -1,0 +1,84 @@
+id: enterprise_estate_pipeline
+namespace: estate_pipe
+description: "Modular ELT Pipeline executing local Python scripts"
+
+variables:
+  api_url: "https://uk-real-estate-rightmove.p.rapidapi.com/buy/property-for-sale"
+  api_host: "uk-real-estate-rightmove.p.rapidapi.com"
+  region_id: "REGION^1036"
+  db_user: "estate_user"
+  db_password: "estate_password"
+  db_host: "pgdatabase"
+  db_port: "5432"
+  db_name: "estate_db"
+
+tasks:
+  # ==========================================
+  # TASK 1: INGESTION
+  # ==========================================
+  - id: run_ingestion
+    type: io.kestra.plugin.scripts.python.Commands
+    containerImage: python:3.13-slim
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: estate-pipe_default 
+      volumes:
+        # 👇 Attaching the named Docker volume we just created
+        - "estate_code:/app"  
+    env:
+      API_URL: "{{ vars.api_url }}"
+      API_HOST: "{{ vars.api_host }}"
+      REGION_ID: "{{ vars.region_id }}"
+      RAPIDAPI_KEY: "{{ secret('RAPIDAPI_KEY') }}" 
+      DESTINATION__POSTGRES__CREDENTIALS: "postgresql://{{ vars.db_user }}:{{ vars.db_password }}@{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
+    beforeCommands:
+      - pip install "dlt[postgres]" requests kestra
+    commands:
+      - cd /app && python ingestion/extract_estate.py
+
+  # ==========================================
+  # TASK 2: TRANSFORMATION
+  # ==========================================
+  - id: run_transformation
+    type: io.kestra.plugin.scripts.python.Commands
+    containerImage: python:3.11-slim
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: estate-pipe_default 
+      volumes:
+        - "estate_code:/app"
+    env:
+      DB_URL: "jdbc:postgresql://{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
+      DB_USER: "{{ vars.db_user }}"
+      DB_PASSWORD: "{{ vars.db_password }}"
+      DB_HOST: "{{ vars.db_host }}"
+      DB_PORT: "{{ vars.db_port }}"
+      DB_NAME: "{{ vars.db_name }}"
+    beforeCommands:
+      - apt-get update && apt-get install -y default-jre procps
+      - pip install pyspark psycopg2-binary kestra
+    commands:
+      - cd /app && python transform/process_estate.py
+
+  # ==========================================
+  # TASK 3: DATA QUALITY VALIDATION
+  # ==========================================
+  - id: run_quality_checks
+    type: io.kestra.plugin.scripts.python.Commands
+    containerImage: python:3.11-slim
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      networkMode: estate-pipe_default 
+      volumes:
+        - "estate_code:/app"
+    env:
+      GX_DB_URL: "postgresql+psycopg2://{{ vars.db_user }}:{{ vars.db_password }}@{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
+    beforeCommands:
+      - pip install great_expectations psycopg2-binary sqlalchemy kestra
+    commands:
+      - cd /app && python quality/validate_estate.py
+
+triggers:
+  - id: daily_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 6 * * *"

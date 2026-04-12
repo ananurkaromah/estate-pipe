@@ -7,6 +7,12 @@ volumes:
     driver: local
   kestra_tmp:
     driver: local
+  estate_code:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}
+      o: bind
 
 services:
   pgdatabase:
@@ -57,6 +63,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - kestra_tmp:/tmp/kestra-wd
     environment:
+      HOST_PATH: ${PWD}
       KESTRA_CONFIGURATION: |
         datasources:
           postgres:

@@ -1,12 +1,11 @@
-# Python Virtual Environment
+# Environments
 .venv/
-__pycache__/
+
+# Secrets
 .env
-
-# dlt Secrets and Configs
 .dlt/secrets.toml
-ingestion/.dlt/secrets.toml
+**/.dlt/secrets.toml
 
-# MacOS/Windows hidden files (just in case)
-.DS_Store
-Thumbs.db
+# Python cache
+__pycache__/
+*.pyc

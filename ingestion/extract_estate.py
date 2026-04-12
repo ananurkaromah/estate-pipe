@@ -2,97 +2,105 @@ import dlt
 import requests
 import os
 import time
+import logging
 import json
+from kestra import Kestra
+
+# Set up logging (we use format='%(message)s' so the raw JSON prints cleanly)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 @dlt.resource(name="real_estate_listings", write_disposition="merge", primary_key="id")
-def fetch_properties(api_key: str = dlt.secrets.value):
-    url = "https://uk-real-estate-rightmove.p.rapidapi.com/buy/property-for-sale"
-    host = "uk-real-estate-rightmove.p.rapidapi.com"
-    
-    headers = {
-        "x-rapidapi-key": api_key, 
-        "x-rapidapi-host": host,
-        "Content-Type": "application/json"
-    }
-    
-    offset = 0          
-    max_pages = 3       
-    current_page = 0
-    total_rows = 0
-    
-    print(f"[METADATA] {json.dumps({'status': 'Init', 'max_pages_limit': max_pages})}")
-    
-    while current_page < max_pages:
-        querystring = {
-            "identifier": "REGION^1036",
-            "sort_by": "HighestPrice",
-            "search_radius": "0.0",
-            "offset": str(offset) 
+def fetch_properties(last_id=dlt.sources.incremental("id")):
+    try:
+        url = os.environ["API_URL"]
+        host = os.environ["API_HOST"]
+        region_id = os.environ["REGION_ID"]
+              
+        headers = {
+            "x-rapidapi-key": os.environ["RAPIDAPI_KEY"], 
+            "x-rapidapi-host": host,
+            "Content-Type": "application/json"
         }
+              
+        offset = 0          
+        max_pages = 3       
+        current_page = 0
         
-        # --- API RESILIENCY & RETRY LOGIC ---
-        max_retries = 3
-        success = False
-        
-        for attempt in range(max_retries):
-            try:
-                # Added explicit 10-second timeout
-                response = requests.get(url, headers=headers, params=querystring, timeout=10)
-                
-                # Smart 429 Handling: Trust the server's requested wait time, default to 5s
-                if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 5))
-                    print(f"[METADATA] {json.dumps({'status': '429 Rate Limited', 'action': f'sleeping {retry_after}s'})}")
-                    time.sleep(retry_after)
-                    continue 
-                
-                response.raise_for_status() 
-                data = response.json()
-                success = True
-                break # Success! Break out of the retry loop
-                
-            except requests.exceptions.RequestException as e:
-                # Exponential Backoff Strategy for timeouts or 500 server errors
-                sleep_time = min(2 ** attempt, 30)
-                print(f"[METADATA] {json.dumps({'status': 'Request Failed', 'attempt': attempt + 1, 'error': str(e), 'action': f'sleeping {sleep_time}s'})}")
-                time.sleep(sleep_time)
-                
-        if not success:
-            print(f"[METADATA] {json.dumps({'status': 'Fatal Error', 'reason': 'Max retries exceeded for page. Stopping pipeline.'})}")
-            break # Stop pagination entirely if the API is completely dead
-
-        # --- PAGINATION & EXTRACTION LOGIC ---
-        properties = data.get("properties", [])
-        page_size = len(properties)
-        
-        if page_size == 0:
-            print(f"[METADATA] {json.dumps({'status': 'Ended Early', 'reason': f'No properties at offset {offset}'})}")
-            break
+        last_val = last_id.last_value if hasattr(last_id, 'last_value') else None
+              
+        while current_page < max_pages:
+            querystring = {
+                "identifier": region_id,
+                "sort_by": "HighestPrice",
+                "search_radius": "0.0",
+                "offset": str(offset) 
+            }
             
-        yield properties
-        
-        total_rows += page_size
-        current_page += 1
-        
-        log_data = {
-            "status": "Success",
-            "page": current_page,
-            "rows_this_page": page_size,
-            "total_rows_extracted": total_rows,
-            "next_offset": offset + page_size
-        }
-        print(f"[METADATA] {json.dumps(log_data)}")
-        
-        offset += page_size 
+            success = False
+            for attempt in range(3):
+                try:
+                    response = requests.get(url, headers=headers, params=querystring, timeout=10)
+                    
+                    if response.status_code == 429:
+                        retry_after = int(response.headers.get("Retry-After", 5))
+                        logging.warning(json.dumps({"event": "rate_limited", "status": 429, "sleep_s": retry_after}))
+                        time.sleep(retry_after)
+                        continue 
+                        
+                    # --- Explicit 5xx Handling ---
+                    if response.status_code >= 500:
+                        sleep_time = 2 ** attempt
+                        logging.warning(json.dumps({"event": "server_error", "status": response.status_code, "attempt": attempt + 1, "sleep_s": sleep_time}))
+                        time.sleep(sleep_time)
+                        continue
+                          
+                    response.raise_for_status() 
+                    success = True
+                    break
+                except requests.exceptions.RequestException as e:
+                    sleep_time = 2 ** attempt
+                    logging.warning(json.dumps({"event": "request_failed", "error": str(e), "sleep_s": sleep_time}))
+                    time.sleep(sleep_time)
+            
+            if not success:
+                logging.error(json.dumps({"event": "fatal_api_error", "message": "Max retries exceeded"}))
+                break
+                  
+            properties = response.json().get("properties", [])
+            if not properties:
+                break
+                  
+            for prop in properties:
+                prop_id = prop.get("id")
+                # --- Robust Incremental Fallback ---
+                try:
+                    if last_val is None or int(prop_id) > int(last_val):
+                        yield prop
+                except (ValueError, TypeError):
+                    yield prop 
+                  
+            offset += len(properties)
+            current_page += 1
+            
+            # --- Structured JSON Logging ---
+            logging.info(json.dumps({
+                "event": "page_loaded",
+                "page": current_page,
+                "rows_yielded": len(properties)
+            }))
+            
+    except Exception as e:
+        logging.error(json.dumps({"event": "extraction_failed", "error": str(e)}))
+        raise
 
 if __name__ == "__main__":
-    pipeline = dlt.pipeline(
-        pipeline_name="estate_extraction",
-        destination="postgres",
-        dataset_name="raw_estate_schema" 
-    )
-    
-    print("Starting the resilient dlt pipeline...")
-    load_info = pipeline.run(fetch_properties())
-    
-    print(f"[METADATA] {json.dumps({'status': 'Pipeline Complete', 'failed_jobs': load_info.has_failed_jobs})}")
+    try:
+        logging.info(json.dumps({"event": "pipeline_start", "pipeline": "dlt_ingestion"}))
+        pipeline = dlt.pipeline(pipeline_name="estate_ext", destination="postgres", dataset_name="raw_estate_schema")
+        load_info = pipeline.run(fetch_properties())
+              
+        Kestra.counter("dlt_packages_loaded", len(load_info.loads_ids))
+        logging.info(json.dumps({"event": "pipeline_complete", "status": "success"}))
+    except Exception as e:
+        logging.error(json.dumps({"event": "pipeline_failed", "error": str(e)}))
+        raise

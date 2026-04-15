@@ -1,11 +1,14 @@
-id: enterprise_estate_pipeline
+id: estate_pipeline
 namespace: estate_pipe
-description: "Modular ELT Pipeline executing local Python scripts"
+description: "Production ELT Pipeline using Custom Docker Image & Rightmove API"
 
 variables:
   api_url: "https://uk-real-estate-rightmove.p.rapidapi.com/buy/property-for-sale"
   api_host: "uk-real-estate-rightmove.p.rapidapi.com"
-  region_id: "REGION^1036"
+  
+  # 🎯 THE FIX: Pointing to London to guarantee high data volume
+  region_id: "REGION^87490"  
+  
   db_user: "estate_user"
   db_password: "estate_password"
   db_host: "pgdatabase"
@@ -13,40 +16,43 @@ variables:
   db_name: "estate_db"
 
 tasks:
+
   # ==========================================
   # TASK 1: INGESTION
   # ==========================================
   - id: run_ingestion
     type: io.kestra.plugin.scripts.python.Commands
-    containerImage: python:3.13-slim
+    containerImage: estate-worker:latest
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker
-      networkMode: estate-pipe_default 
+      networkMode: estate-pipe_default
+      pullPolicy: NEVER
       volumes:
-        # 👇 Attaching the named Docker volume we just created
-        - "estate_code:/app"  
+        - estate_code:/app
     env:
       API_URL: "{{ vars.api_url }}"
       API_HOST: "{{ vars.api_host }}"
       REGION_ID: "{{ vars.region_id }}"
-      RAPIDAPI_KEY: "{{ secret('RAPIDAPI_KEY') }}" 
+      RAPIDAPI_KEY: "{{ secret('RAPIDAPI_KEY') }}"
       DESTINATION__POSTGRES__CREDENTIALS: "postgresql://{{ vars.db_user }}:{{ vars.db_password }}@{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
-    beforeCommands:
-      - pip install "dlt[postgres]" requests kestra
     commands:
-      - cd /app && python ingestion/extract_estate.py
+      - echo "=== INGESTION DEBUG ==="
+      - ls -R /app
+      - cd /app
+      - python ingestion/extract_estate.py
 
   # ==========================================
-  # TASK 2: TRANSFORMATION
+  # TASK 2: TRANSFORMATION (PYSPARK)
   # ==========================================
   - id: run_transformation
     type: io.kestra.plugin.scripts.python.Commands
-    containerImage: python:3.11-slim
+    containerImage: estate-worker:latest
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker
-      networkMode: estate-pipe_default 
+      networkMode: estate-pipe_default
+      pullPolicy: NEVER
       volumes:
-        - "estate_code:/app"
+        - estate_code:/app
     env:
       DB_URL: "jdbc:postgresql://{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
       DB_USER: "{{ vars.db_user }}"
@@ -54,29 +60,32 @@ tasks:
       DB_HOST: "{{ vars.db_host }}"
       DB_PORT: "{{ vars.db_port }}"
       DB_NAME: "{{ vars.db_name }}"
-    beforeCommands:
-      - apt-get update && apt-get install -y default-jre procps
-      - pip install pyspark psycopg2-binary kestra
+      PYSPARK_SUBMIT_ARGS: "--driver-memory 1g pyspark-shell"
     commands:
-      - cd /app && python transform/process_estate.py
+      - echo "=== TRANSFORMATION DEBUG ==="
+      - ls -R /app
+      - cd /app
+      - python transform/process_estate.py
 
   # ==========================================
-  # TASK 3: DATA QUALITY VALIDATION
+  # TASK 3: DATA QUALITY
   # ==========================================
   - id: run_quality_checks
     type: io.kestra.plugin.scripts.python.Commands
-    containerImage: python:3.11-slim
+    containerImage: estate-worker:latest
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker
-      networkMode: estate-pipe_default 
+      networkMode: estate-pipe_default
+      pullPolicy: NEVER
       volumes:
-        - "estate_code:/app"
+        - estate_code:/app
     env:
       GX_DB_URL: "postgresql+psycopg2://{{ vars.db_user }}:{{ vars.db_password }}@{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
-    beforeCommands:
-      - pip install great_expectations psycopg2-binary sqlalchemy kestra
     commands:
-      - cd /app && python quality/validate_estate.py
+      - echo "=== QUALITY DEBUG ==="
+      - ls -R /app
+      - cd /app
+      - python quality/validate_estate.py
 
 triggers:
   - id: daily_schedule

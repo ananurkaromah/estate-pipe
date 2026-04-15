@@ -2,14 +2,14 @@ import os
 import psycopg2
 import logging
 import json
+import sys
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, avg, round, current_timestamp
+from pyspark.sql.functions import col, current_timestamp, expr
 from kestra import Kestra
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 try:
-    logging.info(json.dumps({"event": "spark_init"}))
     db_user = os.environ['DB_USER']
     db_password = os.environ['DB_PASSWORD']
     db_host = os.environ['DB_HOST']
@@ -23,60 +23,76 @@ try:
     conn.cursor().execute("CREATE SCHEMA IF NOT EXISTS curated_estate_schema;")
     conn.close()
 
+    # Added partition config
     spark = SparkSession.builder \
         .appName("EstateTx") \
         .config("spark.jars.packages", "org.postgresql:postgresql:42.6.0") \
-        .config("spark.sql.shuffle.partitions", "4") \
+        .config("spark.sql.shuffle.partitions", "2") \
         .getOrCreate()
 
     db_props = {"user": db_user, "password": db_password, "driver": "org.postgresql.Driver"}
 
-    raw_df = spark.read.jdbc(url=db_url, table="raw_estate_schema.real_estate_listings", properties=db_props)
-
-    # --- High Watermark / Incremental Filtering in Spark ---
+    # Day 0 handling
     try:
-        # Query the curated table to find the highest ID we have already processed
+        raw_df = spark.read.jdbc(url=db_url, table="raw_estate_schema.real_estate_listings", properties=db_props)
+    except Exception as e:
+        if "relation" in str(e) and "does not exist" in str(e):
+            logging.warning(json.dumps({
+                "event": "day_0_handling", 
+                "message": "Source table does not exist yet. Assuming 0 rows extracted. Exiting cleanly."
+            }))
+            spark.stop()
+            sys.exit(0)
+        else:
+            raise e
+
+    # Optimized logging without triggering a full .count() compute
+    logging.info(json.dumps({
+        "event": "raw_data_loaded",
+        "sample": raw_df.limit(5).toPandas().to_dict()
+    }))
+
+    # Watermark with explicit fallback
+    try:
         watermark_query = "(SELECT MAX(id) as max_id FROM curated_estate_schema.clean_properties) as t"
         watermark_df = spark.read.jdbc(url=db_url, table=watermark_query, properties=db_props)
-        last_processed_id = watermark_df.collect()[0]["max_id"]
+        last_id = watermark_df.collect()[0]["max_id"]
         
-        if last_processed_id:
-            # Filter the raw dataframe to only process genuinely new records
-            raw_df = raw_df.filter(col("id") > last_processed_id)
-            logging.info(json.dumps({"event": "watermark_applied", "last_processed_id": last_processed_id}))
-    except Exception as e:
-        # The table likely doesn't exist yet (first run)
-        logging.info(json.dumps({"event": "no_watermark_found", "message": "Proceeding with full load"}))
+        if last_id:
+            raw_df = raw_df.filter(col("id") > last_id)
+            
+    except Exception:
+        logging.warning(json.dumps({
+            "event": "no_watermark",
+            "message": "No previous data found, doing full load"
+        }))
 
-    cols = raw_df.columns
-    price_col = next((c for c in ["price__amount", "price"] if c in cols), None)
-    type_col = next((c for c in ["property_sub_type", "propertySubType", "type"] if c in cols), None)
-
-    if not price_col or not type_col:
-        raise Exception("Required columns not found! Schema drift detected.")
-
-    clean_df = raw_df.filter(col(price_col).isNotNull()) \
-                     .withColumn("price_numeric", col(price_col).cast("double")) \
-                     .withColumn("property_type", col(type_col)) \
-                     .withColumn("ingested_at", current_timestamp())
+    # Transform using expr() for nested columns
+    clean_df = raw_df \
+        .filter(col("price").isNotNull()) \
+        .withColumn("price_numeric", expr("price.amount").cast("double")) \
+        .withColumn("property_type", col("propertySubType")) \
+        .withColumn("ingested_at", current_timestamp())
                      
-    # --- Deduplication Protection ---
-    clean_df = clean_df.dropDuplicates(["id"])
-
-    clean_df.cache()
+    # Safe Drop Duplicates
+    if "id" in raw_df.columns:
+        clean_df = clean_df.dropDuplicates(["id"])
+    
     row_count = clean_df.count()
 
-    if row_count == 0:
-        logging.info(json.dumps({"event": "transformation_skipped", "message": "No new data to process"}))
-    else:
-        logging.info(json.dumps({"event": "data_cleaned", "rows": row_count}))
+    if row_count > 0:
+        # Optimized JDBC Write with batching
+        clean_df.write \
+            .mode("append") \
+            .option("batchsize", 1000) \
+            .jdbc(url=db_url, table="curated_estate_schema.clean_properties", properties=db_props)
+            
         Kestra.counter("spark_rows_cleaned", row_count)
-        
-        clean_df.write.jdbc(url=db_url, table="curated_estate_schema.clean_properties", mode="append", properties=db_props)
-    
-    clean_df.unpersist()
+        logging.info(json.dumps({"event": "transformation_success", "rows_written": row_count}))
+    else:
+        logging.info(json.dumps({"event": "transformation_skipped", "message": "No new rows to process"}))
+
     spark.stop()
-    logging.info(json.dumps({"event": "spark_complete", "status": "success"}))
 
 except Exception as e:
     logging.error(json.dumps({"event": "spark_failed", "error": str(e)}))

@@ -1,17 +1,17 @@
+version: "3.8"
+
 volumes:
   estate_postgres_data:
-    driver: local
   kestra_postgres_data:
-    driver: local
   kestra_data:
-    driver: local
   kestra_tmp:
-    driver: local
+
   estate_code:
+    name: estate_code
     driver: local
     driver_opts:
       type: none
-      device: ${PWD}
+      device: /home/ana-asus/projects/estate-pipe
       o: bind
 
 services:
@@ -29,13 +29,12 @@ services:
   pgadmin:
     image: dpage/pgadmin4
     environment:
-      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
-      - PGADMIN_DEFAULT_PASSWORD=root
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: root
     ports:
       - "8085:80"
     depends_on:
-      pgdatabase:
-        condition: service_started
+      - pgdatabase
 
   kestra_postgres:
     image: postgres:16
@@ -53,17 +52,16 @@ services:
 
   kestra:
     image: kestra/kestra:v1.1
-    pull_policy: always
     user: "root"
     command: server standalone
     env_file:
-      - .env
+      - .env 
     volumes:
       - kestra_data:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
       - kestra_tmp:/tmp/kestra-wd
     environment:
-      HOST_PATH: ${PWD}
+      HOST_PATH: /app
       KESTRA_CONFIGURATION: |
         datasources:
           postgres:
@@ -74,7 +72,7 @@ services:
         kestra:
           server:
             basicAuth:
-              username: "admin@kestra.io" 
+              username: "admin@kestra.io"
               password: Admin1234!
           repository:
             type: postgres
@@ -88,9 +86,16 @@ services:
             tmpDir:
               path: /tmp/kestra-wd/tmp
           url: http://localhost:8080/
+          
+          # THE MASTER KEY: Tells Kestra to allow volume mounts
+          plugins:
+            configurations:
+              - type: io.kestra.plugin.scripts.runner.docker.Docker
+                values:
+                  volume-enabled: true
+
     ports:
       - "8080:8080"
-      - "8081:8081"
     depends_on:
       kestra_postgres:
         condition: service_healthy

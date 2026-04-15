@@ -1,6 +1,6 @@
 # Environments
 .venv/
-venv
+venv/
 
 # Secrets
 .env
@@ -9,4 +9,5 @@ venv
 
 # Python cache
 __pycache__/
-*.pyc
+*.pycvenv/
+.venv/

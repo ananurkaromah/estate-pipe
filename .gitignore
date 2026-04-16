@@ -1,13 +1,3 @@
-# Environments
-.venv/
-venv/
-
-# Secrets
-.env
-.dlt/secrets.toml
-**/.dlt/secrets.toml
-
-# Python cache
 __pycache__/
-*.pycvenv/
-.venv/
+*.jar
+CSV

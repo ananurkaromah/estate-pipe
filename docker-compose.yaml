@@ -1,33 +1,31 @@
-version: "3.8"
-
 volumes:
-  estate_postgres_data:
-  kestra_postgres_data:
-  kestra_data:
-  kestra_tmp:
-
+  postgres_data:
+  # This named volume binds your WSL folder to Docker so Kestra can see your code
   estate_code:
-    name: estate_code
     driver: local
     driver_opts:
       type: none
-      device: /home/ana-asus/projects/estate-pipe
       o: bind
+      device: .
 
 services:
+  # The Core Database
   pgdatabase:
-    image: postgres:16
+    image: postgres:15
+    container_name: pgdatabase
     environment:
+      POSTGRES_DB: estate_db
       POSTGRES_USER: estate_user
       POSTGRES_PASSWORD: estate_password
-      POSTGRES_DB: estate_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-    volumes:
-      - estate_postgres_data:/var/lib/postgresql/data
 
+  # Database UI for easy querying
   pgadmin:
     image: dpage/pgadmin4
+    container_name: pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: root
@@ -36,66 +34,24 @@ services:
     depends_on:
       - pgdatabase
 
-  kestra_postgres:
-    image: postgres:16
-    volumes:
-      - kestra_postgres_data:/var/lib/postgresql/data
-    environment:
-      POSTGRES_DB: kestra
-      POSTGRES_USER: kestra
-      POSTGRES_PASSWORD: k3str4
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-
+  # The Orchestrator
   kestra:
-    image: kestra/kestra:v1.1
+    image: kestra/kestra:latest-full
+    container_name: kestra
     user: "root"
-    command: server standalone
-    env_file:
-      - .env 
-    volumes:
-      - kestra_data:/app/storage
-      - /var/run/docker.sock:/var/run/docker.sock
-      - kestra_tmp:/tmp/kestra-wd
+    command: server local
     environment:
-      HOST_PATH: /app
       KESTRA_CONFIGURATION: |
-        datasources:
-          postgres:
-            url: jdbc:postgresql://kestra_postgres:5432/kestra
-            driverClassName: org.postgresql.Driver
-            username: kestra
-            password: k3str4
         kestra:
-          server:
-            basicAuth:
-              username: "admin@kestra.io"
-              password: Admin1234!
           repository:
             type: postgres
-          storage:
-            type: local
-            local:
-              basePath: "/app/storage"
-          queue:
-            type: postgres
-          tasks:
-            tmpDir:
-              path: /tmp/kestra-wd/tmp
-          url: http://localhost:8080/
-          
-          # THE MASTER KEY: Tells Kestra to allow volume mounts
-          plugins:
-            configurations:
-              - type: io.kestra.plugin.scripts.runner.docker.Docker
-                values:
-                  volume-enabled: true
-
+            postgres:
+              url: jdbc:postgresql://pgdatabase:5432/estate_db
+              username: estate_user
+              password: estate_password
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8080:8080"
     depends_on:
-      kestra_postgres:
-        condition: service_healthy
+      - pgdatabase

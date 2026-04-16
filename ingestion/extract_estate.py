@@ -1,71 +1,65 @@
 import dlt
 import requests
-import os
+import csv
 import logging
 import json
+import os
 from kestra import Kestra
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-@dlt.resource(name="real_estate_listings", write_disposition="append")
-def fetch_properties():
-    url = os.environ["API_URL"]
-    headers = {
-        "X-RapidAPI-Key": os.environ["RAPIDAPI_KEY"],
-        "X-RapidAPI-Host": os.environ["API_HOST"]
-    }
-    querystring = {
-        "identifier": os.environ["REGION_ID"],
-        "sort_by": "HighestPrice",
-        "search_radius": "0.0"
-    }
+PPD_HEADERS = [
+    "transaction_id", "price", "transfer_date", "postcode", "property_type",
+    "old_new", "duration", "paon", "saon", "street", "locality",
+    "town_city", "district", "county", "ppd_category", "record_status"
+]
 
-    offset = 0
-    while True:
-        querystring["offset"] = str(offset)
-        
-        try:
-            # Added timeout as requested
-            response = requests.get(url, headers=headers, params=querystring, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            properties = data.get("properties", [])
-            
-            # Break the loop and handle empty results
-            if not properties:
-                if offset == 0:  # Only log warning if the very first page is empty
-                    logging.warning(json.dumps({
-                        "event": "no_data",
-                        "message": "API returned empty result"
-                    }))
-                    yield from []
-                break
-            
+@dlt.resource(name="uk_land_registry_transactions_raw", write_disposition="append")
+def fetch_land_registry_data():
+    url = os.environ["CSV_URL"]
+
+    try:
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            lines = (line.decode('utf-8') for line in r.iter_lines())
+
+            #Safe header skip
+            try:
+                next(lines)
+            except StopIteration:
+                logging.warning(json.dumps({
+                    "event": "empty_file",
+                    "message": "CSV file is empty"
+                }))
+                return
+
+            reader = csv.DictReader(lines, fieldnames=PPD_HEADERS)
+
+            count = 0
+            for row in reader:
+                row["transaction_id"] = row["transaction_id"].replace("{", "").replace("}", "")
+                yield row
+                count += 1
+
             logging.info(json.dumps({
-                "event": "api_fetch_success",
-                "region": querystring["identifier"],
-                "offset": offset,
-                "properties_found": len(properties)
+                "event": "ingestion_success",
+                "rows_yielded": count
             }))
-            
-            # Python-side JSON flattening and yielding
-            for prop in properties:
-                prop["price_amount"] = prop.get("price", {}).get("amount")
-                yield prop
-            
-            # Advance pagination
-            offset += len(properties)
 
-        except requests.exceptions.RequestException as e:
-            logging.error(json.dumps({"event": "api_fetch_failed", "error": str(e)}))
-            raise
+    except Exception as e:
+        logging.error(json.dumps({
+            "event": "ingestion_failed",
+            "error": str(e)
+        }))
+        raise
+
 
 if __name__ == "__main__":
     pipeline = dlt.pipeline(
-        pipeline_name="estate_ext", 
-        destination="postgres", 
+        pipeline_name="land_registry_ext",
+        destination="postgres",
         dataset_name="raw_estate_schema"
     )
-    load_info = pipeline.run(fetch_properties())
+
+    load_info = pipeline.run(fetch_land_registry_data())
     Kestra.counter("dlt_packages_loaded", len(load_info.loads_ids))

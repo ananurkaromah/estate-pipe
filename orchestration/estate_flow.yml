@@ -1,14 +1,9 @@
 id: estate_pipeline
 namespace: estate_pipe
-description: "Production ELT Pipeline using Custom Docker Image & Rightmove API"
+description: "UK Land Registry Price Paid Data ELT Pipeline"
 
 variables:
-  api_url: "https://uk-real-estate-rightmove.p.rapidapi.com/buy/property-for-sale"
-  api_host: "uk-real-estate-rightmove.p.rapidapi.com"
-  
-  # 🎯 THE FIX: Pointing to London to guarantee high data volume
-  region_id: "REGION^87490"  
-  
+  csv_url: "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com/pp-monthly-update-new-version.csv"
   db_user: "estate_user"
   db_password: "estate_password"
   db_host: "pgdatabase"
@@ -16,9 +11,8 @@ variables:
   db_name: "estate_db"
 
 tasks:
-
   # ==========================================
-  # TASK 1: INGESTION
+  # TASK 1: INGESTION (DLT)
   # ==========================================
   - id: run_ingestion
     type: io.kestra.plugin.scripts.python.Commands
@@ -30,16 +24,12 @@ tasks:
       volumes:
         - estate_code:/app
     env:
-      API_URL: "{{ vars.api_url }}"
-      API_HOST: "{{ vars.api_host }}"
-      REGION_ID: "{{ vars.region_id }}"
-      RAPIDAPI_KEY: "{{ secret('RAPIDAPI_KEY') }}"
+      CSV_URL: "{{ vars.csv_url }}"
       DESTINATION__POSTGRES__CREDENTIALS: "postgresql://{{ vars.db_user }}:{{ vars.db_password }}@{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
     commands:
-      - echo "=== INGESTION DEBUG ==="
-      - ls -R /app
+      - echo "=== INGESTION START ==="
       - cd /app
-      - python ingestion/extract_estate.py
+      - python3 ingestion/extract_estate.py
 
   # ==========================================
   # TASK 2: TRANSFORMATION (PYSPARK)
@@ -62,13 +52,12 @@ tasks:
       DB_NAME: "{{ vars.db_name }}"
       PYSPARK_SUBMIT_ARGS: "--driver-memory 1g pyspark-shell"
     commands:
-      - echo "=== TRANSFORMATION DEBUG ==="
-      - ls -R /app
+      - echo "=== TRANSFORMATION START ==="
       - cd /app
-      - python transform/process_estate.py
+      - python3 transform/process_estate.py
 
   # ==========================================
-  # TASK 3: DATA QUALITY
+  # TASK 3: DATA QUALITY (GREAT EXPECTATIONS)
   # ==========================================
   - id: run_quality_checks
     type: io.kestra.plugin.scripts.python.Commands
@@ -77,15 +66,13 @@ tasks:
       type: io.kestra.plugin.scripts.runner.docker.Docker
       networkMode: estate-pipe_default
       pullPolicy: NEVER
-      volumes:
-        - estate_code:/app
+
     env:
       GX_DB_URL: "postgresql+psycopg2://{{ vars.db_user }}:{{ vars.db_password }}@{{ vars.db_host }}:{{ vars.db_port }}/{{ vars.db_name }}"
     commands:
-      - echo "=== QUALITY DEBUG ==="
-      - ls -R /app
+      - echo "=== DATA QUALITY START ==="
       - cd /app
-      - python quality/validate_estate.py
+      - python3 quality/validate_estate.py
 
 triggers:
   - id: daily_schedule

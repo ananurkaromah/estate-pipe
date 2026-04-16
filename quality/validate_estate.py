@@ -1,49 +1,80 @@
+import great_expectations as gx
 import os
 import logging
 import json
-import great_expectations as gx
-from kestra import Kestra
+import sys
+from great_expectations.datasource.fluent.interfaces import TestConnectionError
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 try:
-    logging.info(json.dumps({"event": "gx_init", "message": "Starting Data Validation"}))
-
-    context = gx.get_context(mode="ephemeral")
+    context = gx.get_context()
+    gx_db_url = os.environ["GX_DB_URL"]
 
     datasource = context.sources.add_postgres(
-        name="estate_postgres", 
-        connection_string=os.environ["GX_DB_URL"]
+        name="estate_postgres",
+        connection_string=gx_db_url
     )
 
-    asset = datasource.add_table_asset(
-        name="clean_properties", 
-        schema_name="curated_estate_schema"
-    )
+    try:
+        asset = datasource.add_table_asset(
+            name="clean_uk_properties",
+            table_name="clean_uk_properties",
+            schema_name="curated_estate_schema"
+        )
+    except TestConnectionError as e:
+        if "does not exist" in str(e):
+            logging.warning(json.dumps({
+                "event": "day_0_handling",
+                "message": "Curated table missing. Skipping validation."
+            }))
+            sys.exit(0)
+        else:
+            raise e
 
     batch_request = asset.build_batch_request()
+
+    suite_name = "uk_estate_quality_suite"
+    context.add_or_update_expectation_suite(expectation_suite_name=suite_name)
+
     validator = context.get_validator(
-        batch_request=batch_request, 
-        create_expectation_suite_with_name="property_quality_suite"
+        batch_request=batch_request,
+        expectation_suite_name=suite_name
     )
 
+    #Expectations
+    validator.expect_column_values_to_not_be_null("transaction_id")
+    validator.expect_column_values_to_be_unique("transaction_id")
     validator.expect_column_values_to_not_be_null("price_numeric")
-    validator.expect_column_values_to_be_between("price_numeric", min_value=1000)
-    validator.expect_column_values_to_not_be_null("property_type")
+    validator.expect_column_values_to_be_between("price_numeric", min_value=1)
 
-    validation_result = validator.validate()
+    validator.save_expectation_suite()
 
-    if not validation_result.success:
+    checkpoint = context.add_or_update_checkpoint(
+        name="estate_checkpoint",
+        validations=[{
+            "batch_request": batch_request,
+            "expectation_suite_name": suite_name
+        }]
+    )
+
+    result = checkpoint.run()
+
+    if not result["success"]:
         logging.error(json.dumps({
-            "event": "validation_failed", 
-            "details": validation_result.to_json_dict()
+            "event": "gx_failed",
+            "details": str(result)
         }))
-        Kestra.counter("gx_validation_failures", 1)
-        raise Exception("Data Validation Failed! Halting pipeline to prevent bad data downstream.")
+        sys.exit(1)
 
-    logging.info(json.dumps({"event": "validation_success", "status": "passed"}))
-    Kestra.counter("gx_validation_success", 1)
+    logging.info(json.dumps({
+        "event": "gx_success",
+        "message": "All data quality checks passed"
+    }))
 
 except Exception as e:
-    logging.error(json.dumps({"event": "gx_fatal_error", "error": str(e)}))
+    logging.error(json.dumps({
+        "event": "gx_fatal_error",
+        "error": str(e)
+    }))
     raise

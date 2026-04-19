@@ -55,3 +55,15 @@ services:
       - "8080:8080"
     depends_on:
       - pgdatabase
+
+# The Visualization Layer
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3000:3000"
+    environment:
+      # Metabase uses its own internal H2 database by default
+      MB_DB_TYPE: h2
+    depends_on:
+      - pgdatabase

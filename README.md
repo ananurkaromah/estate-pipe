@@ -91,8 +91,10 @@ The entire infrastructure—from the extraction scripts to the visualization lay
 
 ## Strategic Business Insights & Data Visualization
 
-![alt text](<UK real estate executive summary-1.png>)
 
+<img width="906" height="485" alt="estate-wf" src="https://github.com/user-attachments/assets/a11e1209-4529-40f3-abc3-0a607a76a8f3" />
+
+<br>
 By connecting Metabase directly to the `curated_estate_schema`, the pipeline translates over 93,000 raw transaction records into actionable market intelligence:
 
 * **Geographic Concentration:** London remains the undisputed epicenter of the UK property market, driving nearly five times the transaction volume of the next most active city (Manchester), followed closely by Bristol and Birmingham.

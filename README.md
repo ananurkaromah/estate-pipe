@@ -44,9 +44,12 @@ This diagram illustrates a fully containerized, end-to-end ELT pipeline built to
 - Serve: Metabase connects directly to the clean PostgreSQL schema to deliver dynamic, real-time business intelligence dashboards.
 The entire infrastructure—from the extraction scripts to the visualization layer—operates within an isolated Docker environment, ensuring high reproducibility and clean dependency management.
 
-<img width="2830" height="1472" alt="estate-wf" src="https://github.com/user-attachments/assets/366e672d-4f71-4468-b55d-7a03004b00b5" />
+<br>
 
-This platform utilizes a modern data stack entirely hosted within Docker containers:
+<img width="2830" height="1472" alt="estate-wf" src="https://github.com/user-attachments/assets/366e672d-4f71-4468-b55d-7a03004b00b5" />
+<br>
+
+### Modern data stack:
 
 1. **Extraction:** Python `requests` (streaming) & `dlt` (Data Load Tool)
 2. **Orchestration:** Kestra

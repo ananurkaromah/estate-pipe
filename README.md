@@ -38,10 +38,12 @@ The architecture is built with a focus on idempotency, automated data quality te
 
 ## Pipeline Architecture & Data Lineage
 This diagram illustrates a fully containerized, end-to-end ELT pipeline built to process large-scale UK real estate data safely and efficiently. It follows a structured four-stage workflow:
+
 - Extract & Load: Unstructured CSV data is streamed from the external UK Land Registry and safely loaded into a raw PostgreSQL landing zone using dlt to prevent memory overload.
 - Transform: Apache PySpark handles memory-efficient type casting and incremental filtering, writing the processed data into a curated PostgreSQL schema using optimized JDBC batching.
 - Validate: Great Expectations runs automatically against the curated schema to enforce strict data quality rules and ensure pipeline integrity.
 - Serve: Metabase connects directly to the clean PostgreSQL schema to deliver dynamic, real-time business intelligence dashboards.
+<br>
 The entire infrastructure—from the extraction scripts to the visualization layer—operates within an isolated Docker environment, ensuring high reproducibility and clean dependency management.
 
 <br>
